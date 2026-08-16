@@ -14,17 +14,69 @@ const app = express();
 
 
 /* =====================================================
-   CORS
+   CONFIGURATION
 ===================================================== */
 
-const allowedOrigin =
+const PORT =
+  Number(process.env.PORT) || 5000;
+
+const CLIENT_URL =
   process.env.CLIENT_URL ||
   "http://localhost:5173";
 
 
+/* =====================================================
+   CORS
+===================================================== */
+
+const allowedOrigins = CLIENT_URL
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+
 app.use(
   cors({
-    origin: allowedOrigin,
+    origin: (origin, callback) => {
+
+      /*
+       * Allow requests without an Origin header.
+       *
+       * This is useful for:
+       * - curl
+       * - Postman
+       * - server-to-server requests
+       */
+
+      if (!origin) {
+        return callback(null, true);
+      }
+
+
+      /*
+       * Allow configured frontend origins.
+       */
+
+      if (
+        allowedOrigins.includes(origin)
+      ) {
+        return callback(null, true);
+      }
+
+
+      console.warn(
+        "CORS blocked origin:",
+        origin
+      );
+
+
+      return callback(
+        new Error(
+          `CORS blocked origin: ${origin}`
+        )
+      );
+    },
+
     credentials: true,
 
     methods: [
@@ -50,13 +102,14 @@ app.use(
 ===================================================== */
 
 app.use(
-  express.json()
+  express.json({
+    limit: "1mb"
+  })
 );
 
 
 /* =====================================================
    REQUEST LOGGER
-   Temporary but useful for debugging
 ===================================================== */
 
 app.use(
@@ -79,9 +132,14 @@ app.get(
   "/api/health",
   (req, res) => {
 
-    res.json({
+    res.status(200).json({
       ok: true,
-      service: "Eco Rentels API"
+      service: "Eco Rentels API",
+      environment:
+        process.env.NODE_ENV ||
+        "development",
+      timestamp:
+        new Date().toISOString()
     });
 
   }
@@ -89,7 +147,7 @@ app.get(
 
 
 /* =====================================================
-   ROUTES
+   AUTH ROUTES
 ===================================================== */
 
 app.use(
@@ -98,17 +156,29 @@ app.use(
 );
 
 
+/* =====================================================
+   VEHICLE ROUTES
+===================================================== */
+
 app.use(
   "/api/vehicles",
   vehicleRoutes
 );
 
 
+/* =====================================================
+   RIDE ROUTES
+===================================================== */
+
 app.use(
   "/api/rides",
   rideRoutes
 );
 
+
+/* =====================================================
+   PRICING ROUTES
+===================================================== */
 
 app.use(
   "/api/pricing",
@@ -124,7 +194,8 @@ app.use(
   (req, res) => {
 
     res.status(404).json({
-      message: `Route not found: ${req.method} ${req.originalUrl}`
+      message:
+        `Route not found: ${req.method} ${req.originalUrl}`
     });
 
   }
@@ -143,6 +214,26 @@ app.use(
       err
     );
 
+
+    /*
+     * Handle CORS errors
+     */
+
+    if (
+      err.message &&
+      err.message.startsWith(
+        "CORS blocked origin:"
+      )
+    ) {
+
+      return res.status(403).json({
+        message:
+          "CORS policy blocked this request."
+      });
+
+    }
+
+
     res.status(
       err.status || 500
     ).json({
@@ -156,22 +247,21 @@ app.use(
 
 
 /* =====================================================
-   SERVER START
+   DATABASE + SERVER START
 ===================================================== */
-
-const PORT =
-  Number(process.env.PORT) ||
-  5000;
-
 
 async function startServer() {
 
   try {
 
+    /*
+     * Check required environment variables
+     */
+
     if (!process.env.MONGO_URI) {
 
       throw new Error(
-        "MONGO_URI is missing from server/.env"
+        "MONGO_URI is missing from environment variables."
       );
 
     }
@@ -180,16 +270,43 @@ async function startServer() {
     if (!process.env.JWT_SECRET) {
 
       throw new Error(
-        "JWT_SECRET is missing from server/.env"
+        "JWT_SECRET is missing from environment variables."
       );
 
     }
 
 
     console.log(
+      "----------------------------------------"
+    );
+
+    console.log(
+      "Eco Rentels API starting..."
+    );
+
+    console.log(
+      `Environment: ${
+        process.env.NODE_ENV ||
+        "development"
+      }`
+    );
+
+    console.log(
+      `Port: ${PORT}`
+    );
+
+    console.log(
+      `Client URL: ${CLIENT_URL}`
+    );
+
+    console.log(
       "Connecting to MongoDB..."
     );
 
+
+    /*
+     * MongoDB connection
+     */
 
     await mongoose.connect(
       process.env.MONGO_URI,
@@ -200,16 +317,35 @@ async function startServer() {
 
 
     console.log(
-      "MongoDB connected"
+      "MongoDB connected successfully"
     );
 
 
+    /*
+     * Start Express
+     *
+     * 0.0.0.0 is important for Render.
+     */
+
     app.listen(
       PORT,
+      "0.0.0.0",
       () => {
 
         console.log(
-          `API running on http://localhost:${PORT}`
+          "----------------------------------------"
+        );
+
+        console.log(
+          `Eco Rentels API running on port ${PORT}`
+        );
+
+        console.log(
+          `Health check: /api/health`
+        );
+
+        console.log(
+          "----------------------------------------"
         );
 
       }
@@ -218,17 +354,45 @@ async function startServer() {
   } catch (error) {
 
     console.error(
-      "SERVER STARTUP FAILED:"
+      "----------------------------------------"
+    );
+
+    console.error(
+      "SERVER STARTUP FAILED"
     );
 
     console.error(
       error.message
     );
 
+    console.error(
+      "----------------------------------------"
+    );
+
+
+    /*
+     * Close MongoDB connection
+     * if it was partially opened.
+     */
+
+    try {
+
+      await mongoose.connection.close();
+
+    } catch {
+      // Ignore close errors
+    }
+
+
     process.exit(1);
 
   }
+
 }
 
+
+/* =====================================================
+   START APPLICATION
+===================================================== */
 
 startServer();
